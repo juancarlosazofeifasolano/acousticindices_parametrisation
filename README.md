@@ -97,11 +97,11 @@ git clone https://github.com/juancarlosazofeifasolano/acousticindices_parametris
 
 For computing the the acoustic indices (H, ACI, AEI, ADI, NDSI) with the 432 unique iterations:
 - Navigate to `code_matlab_acousticindices/`
-- Use **MATLAB Desktop** or **[MATLAB Online](https://matlab.mathworks.com/)** to open and run `.mlx` Live Scripts for computing acoustic indices
+- Use MATLAB Desktop or for computing acoustic indices
 - Results are saved automatically under `outcome_acousticindices/`
 
 > ✅ All MATLAB scripts are set up to:
-> - Use **relative paths** for seamless portability
+> - Use relative paths for seamless portability
 
 ### 3. Run R Scripts
 
@@ -110,16 +110,14 @@ For computing the ordination analyses and Bayesian models. Results from the full
 - Bayesian GLMMs (via `brms`): located in `code_r_glmm/`
 
 > ✅ All R scripts are set up to:
-> - Use **relative paths** for seamless portability
-> - Automatically check and install any **missing R packages**
+> - Use relative paths** for seamless portability
+> - Automatically check and install any missing R packages
 
 ---
 
 ## 📝 Citation
 
-This repository is part of a PhD research project focused on the **acoustic monitoring of ecosystems**.
-
-Citation details will be added once the associated publications are available.
+This repository is part of a PhD research project. Citation details will be added once the associated publications are available.
 
 Author: Juan Carlos Azofeifa-Solano  
 Institution: Centre for Marine Science and Technology, Curtin University, Australian Institute of Marine Science
@@ -137,6 +135,6 @@ The author acknowledges the support of the Australian Coral Reef Resilience Init
 
 For questions, collaborations, or feedback:
 
-- Open an [issue on GitHub](https://github.com/juancarlosazofeifasolano/acousticindices_parametrisation/issues)
+- Open an issue on GitHub: [https://github.com/juancarlosazofeifasolano/acousticindices_parametrisation/issues]
 
 
