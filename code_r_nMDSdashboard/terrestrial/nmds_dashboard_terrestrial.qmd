@@ -1,0 +1,90 @@
+---
+title: "Interactive NMDS Plot Explorer"
+format: 
+  html:
+    theme: cosmo
+    toc: true
+    self-contained: true
+engine: shiny
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(shiny)
+library(shinyWidgets)
+library(stringr)
+
+# Define the relative base directory for chorus folders
+chorus_base_dir <- file.path("..", "..", "outcome_multivariate", "terrestrial")
+
+# List all immediate subfolders (choruses)
+chorus_choices <- list.dirs(chorus_base_dir, full.names = FALSE, recursive = FALSE)
+```
+
+## NMDS Plot Viewer
+
+```{r app}
+ui <- fluidPage(
+  titlePanel("NMDS Plot Explorer"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("chorus", "Select Chorus Folder:",
+                  choices = chorus_choices,
+                  selected = chorus_choices[1]),
+
+      sliderTextInput("fs", "Sampling Rate (FS):",
+                      choices = c(32000, 24000, 22050, 16000, 12000, 8000),
+                      selected = 32000,
+                      grid = TRUE,
+                      hide_min_max = TRUE),
+
+      sliderTextInput("nfft", "FFT Length (NFFT):",
+                      choices = c(128, 256, 512, 1024, 2048, 4096, 8192, 16384),
+                      selected = 128,
+                      grid = TRUE,
+                      hide_min_max = TRUE),
+
+      sliderTextInput("overlap", "Window Overlap:",
+                      choices = c(0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9),
+                      selected = 0.5,
+                      grid = TRUE,
+                      hide_min_max = TRUE)
+    ),
+    mainPanel(
+      imageOutput("nmds_plot", width = "100%")
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  output$nmds_plot <- renderImage({
+    formatted_overlap <- format(round(as.numeric(input$overlap), 2), nsmall = 2)
+
+    filename <- sprintf("NMDS_FS_%d_NFFT_%d_Overlap_%s.png",
+                        as.numeric(input$fs),
+                        as.numeric(input$nfft),
+                        formatted_overlap)
+
+    filepath <- file.path("..", "..", "outcome_multivariate", "terrestrial", input$chorus, filename)
+
+    if (!file.exists(filepath)) {
+      return(list(
+        src = NULL,
+        alt = paste("No NMDS image found for:", filename),
+        contentType = NULL
+      ))
+    }
+
+    list(
+      src = filepath,
+      contentType = "image/png",
+      width = "100%"
+    )
+  }, deleteFile = FALSE)
+}
+
+shinyApp(ui, server)
+```
