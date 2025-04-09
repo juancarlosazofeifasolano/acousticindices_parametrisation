@@ -51,23 +51,23 @@ acousticindices_parametrisation/
 
 ## 🧮 Acoustic Indices Computed
 
-- **H** – Acoustic Entropy
-- **ACI** – Acoustic Complexity Index
-- **AEI** – Acoustic Evenness Index   
-- **ADI** – Acoustic Diversity Index  
-- **NDSI** – Normalised Difference Soundscape Index  
+- H – Acoustic Entropy
+- ACI – Acoustic Complexity Index
+- AEI – Acoustic Evenness Index   
+- ADI – Acoustic Diversity Index  
+- NDSI – Normalised Difference Soundscape Index  
 
 ---
 
 ## 📈 Analyses Performed
 
-- **Multivariate Ordination**: NMDS using `vegan`
-- **Multivariate Descriptors**:
+- Multivariate Ordination: NMDS using `vegan`
+- Multivariate Descriptors:
   - Centroid Distance
   - Habitat Dispersion
   - Kernel Density Overlap
   - Bhattacharyya Coefficient
-- **Bayesian Generalized Linear Mixed Model**
+- Bayesian Generalized Linear Mixed Model
 
 ---
 
@@ -91,6 +91,7 @@ Explore the parametrisation effects on the nMDS results online:
 
 ```bash
 git clone https://github.com/juancarlosazofeifasolano/acousticindices_parametrisation.git
+```
 
 ### 2. Run MATLAB Scripts
 
