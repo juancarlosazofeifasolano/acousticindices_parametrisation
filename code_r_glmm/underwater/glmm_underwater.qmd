@@ -1,0 +1,389 @@
+---
+title: "fft_sensitivity_multidimensional"
+format: html
+editor: visual
+---
+
+# Bayesian Hierarchical Modeling of Environmental Acoustic Data: A Case Study on Coral Reef Soundscapes
+
+## Load required libraries
+
+```{r}
+required_packages <- c(
+  "brms", "tidyverse", "patchwork", "gridExtra", "ggplot2", "posterior",
+  "ggtext", "plotly", "htmlwidgets"
+)
+
+# Install any missing packages
+installed <- rownames(installed.packages())
+missing_packages <- setdiff(required_packages, installed)
+
+if (length(missing_packages) > 0) {
+  cat("Installing missing packages:\n")
+  print(missing_packages)
+  install.packages(missing_packages)
+}
+
+# Load all required packages
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+
+library(brms)
+library(tidyverse)
+library(patchwork)
+library(gridExtra)
+library(ggplot2)
+library(posterior)
+library(ggtext)
+library(plotly)
+library(htmlwidgets)
+```
+
+## Set Directories
+
+```{r}
+# Set up relative paths from the current script location
+# Get path to current script, fallback to working directory if run from Quarto or terminal
+if (requireNamespace("rstudioapi", quietly = TRUE) &&
+    rstudioapi::isAvailable() &&
+    !is.null(rstudioapi::getSourceEditorContext()$path)) {
+  script_path <- dirname(rstudioapi::getSourceEditorContext()$path)
+} else {
+  script_path <- getwd()  # fallback when knitting or running outside RStudio
+}
+project_root <- normalizePath(file.path(script_path, "..", ".."))
+
+# Define paths for input data and output results
+data_dir <- file.path(project_root, "outcome_multivariate", "underwater", "nmds_metrics_by_night.csv")
+base_output_dir <- file.path(project_root, "outcome_glmm", "underwater")
+
+# Create output directory if it doesn't exist
+if (!dir.exists(base_output_dir)) dir.create(base_output_dir, recursive = TRUE)
+
+# Check for data file existence
+if (!file.exists(data_dir)) stop("Data file does not exist: ", data_dir)
+```
+
+## Load and prepare data
+
+```{r}
+data_orig <- read.csv(data_dir) %>%
+  rename(
+    Dispersion_Pocillopora = Habitat1_Dispersion,
+    Dispersion_NonPocillopora = Habitat2_Dispersion
+  ) %>%
+  mutate(
+    FS = as.numeric(FS),
+    NFFT = as.numeric(NFFT),
+    Overlap = as.numeric(Overlap)
+  )
+```
+
+## Parameters for modeling and plotting
+
+```{r}
+# Define main predictors and responses
+main_effects <- c("FS", "NFFT", "Overlap")
+response_vars <- c(
+  "Centroid_Distance",
+  "Dispersion_Pocillopora",
+  "Dispersion_NonPocillopora",
+  "KDE_Overlap",
+  "Bhattacharyya_Coefficient"
+)
+
+# Scale predictors and responses to [0, 1]
+data_scaled <- data_orig %>%
+  mutate(across(all_of(c(main_effects, response_vars)),
+                ~ (.-min(., na.rm = TRUE)) / (max(., na.rm = TRUE)-min(., na.rm = TRUE))))
+
+# Save for transparency
+write.csv(data_scaled, file.path(base_output_dir, "Multivariate_Summary_SCALED.csv"), row.names = FALSE)
+
+# Lookup for unscaling x-axis in plots
+scaling_lookup <- data_orig %>%
+  summarise(across(all_of(main_effects), list(min = min, max = max), na.rm = TRUE))
+
+unscale_var <- function(scaled_vals, var_name) {
+  vmin <- scaling_lookup[[paste0(var_name, "_min")]]
+  vmax <- scaling_lookup[[paste0(var_name, "_max")]]
+  return(scaled_vals * (vmax - vmin) + vmin)
+}
+
+# Modeling setup
+response_families <- setNames(rep(list(gaussian()), length(response_vars)), response_vars)
+gam_models <- list()
+all_plots <- list()
+
+# Pretty axis labels
+axis_labels <- c(
+  FS = "Sampling Rate (Hz)",
+  NFFT = "FFT Window Size",
+  Overlap = "Window Overlap (%)"
+)
+
+# Pretty response labels (with italics)
+y_labels <- c(
+  Centroid_Distance = "Distance between centroids",
+  Dispersion_Pocillopora = "Multivariate dispersion of *Pocillopora*",
+  Dispersion_NonPocillopora = "Multivariate dispersion of Non-*Pocillopora*",
+  KDE_Overlap = "Kernel Density Estimation 95% Overlap",
+  Bhattacharyya_Coefficient = "Bhattacharyya coefficient"
+)
+
+
+line_col <- "#007D8A"     # Coral reef teal — vibrant and aquatic
+ribbon_col <- "#B2E0DF"   # Pale turquoise — like shallow water
+point_col <- "gray40"     # Neutral for observed values
+
+# Reference values for marginal effects
+ref_values <- data_scaled %>%
+  summarise(across(all_of(main_effects), median, na.rm = TRUE))
+```
+
+## Fit simple and complex models
+
+```{r}
+model_types <- list(
+  additive = "FS + NFFT + Overlap",
+  interaction = "FS * NFFT * Overlap"
+)
+
+# Storage for model comparison
+model_comparisons <- list()
+
+for (model_name in names(model_types)) {
+  formula_str <- model_types[[model_name]]
+  cat("\n==============================\n")
+  cat("Running", model_name, "model\n")
+  cat("==============================\n")
+
+  for (resp in response_vars) {
+    cat("\n--- Processing model for:", resp, "---\n")
+    resp_output_dir <- file.path(base_output_dir, model_name, resp)
+    dir.create(resp_output_dir, recursive = TRUE, showWarnings = FALSE)
+
+    formula <- bf(as.formula(paste0(resp, " ~ ", formula_str)))
+
+    model <- brm(
+      formula = formula,
+      data = data_scaled,
+      family = gaussian(),
+      prior = c(
+        prior(normal(0, 2), class = "b"),
+        prior(normal(0, 2), class = "Intercept")
+      ),
+      iter = 4000, warmup = 1000, chains = 4, cores = 4,
+      control = list(adapt_delta = 0.99, max_treedepth = 15),
+      save_pars = save_pars(all = TRUE),
+      seed = 1234
+    )
+
+    saveRDS(model, file = file.path(resp_output_dir, paste0("brms_model_", resp, ".rds")))
+
+    # Save summary table
+    model_summary <- summary(model)
+    fixed_stats <- as.data.frame(model_summary$fixed)
+    fixed_stats$Parameter <- rownames(fixed_stats)
+    fixed_stats$Type <- "Fixed"
+
+    all_stats <- fixed_stats %>%
+      select(Parameter, Type, Estimate, Est.Error, Q2.5 = `l-95% CI`, Q97.5 = `u-95% CI`, Rhat, Bulk_ESS, Tail_ESS) %>%
+      mutate(Significant = ifelse(Q2.5 > 0 | Q97.5 < 0, "Yes", "No"))
+
+    write.csv(all_stats, file = file.path(resp_output_dir, paste0("model_summary_", resp, ".csv")), row.names = FALSE)
+
+    # Posterior Predictive Check
+    pp_plot <- pp_check(model, nsamples = 100) +
+      ggtitle(paste("Posterior Predictive Check:", resp, "-", model_name))
+    ggsave(file.path(resp_output_dir, paste0("pp_plot_", resp, ".png")), pp_plot, width = 8, height = 6)
+
+    # Posterior Samples
+    post_samples <- posterior_samples(model)
+    write.csv(post_samples, file.path(resp_output_dir, paste0("posterior_samples_", resp, ".csv")), row.names = FALSE)
+
+    # Save LOO for model comparison
+    loo_obj <- loo(model)
+    saveRDS(loo_obj, file = file.path(resp_output_dir, paste0("loo_", resp, ".rds")))
+    model_comparisons[[resp]][[model_name]] <- loo_obj
+
+    # Marginal effect plots
+    all_plots[[resp]] <- list()
+
+    for (effect_name in main_effects) {
+      cond_vars <- ref_values %>% select(-all_of(effect_name))
+
+      marginal <- marginal_effects(
+        model,
+        effects = effect_name,
+        conditions = cond_vars,
+        method = "fitted"
+      )
+
+      saveRDS(marginal, file = file.path(resp_output_dir, paste0("marginal_effect_", resp, "_", effect_name, ".rds")))
+
+      marginal_df <- as.data.frame(marginal[[1]])
+      raw_points <- data_scaled %>% select(all_of(effect_name), all_of(resp))
+
+      # Unscale x-axis
+      marginal_df[[effect_name]] <- unscale_var(marginal_df[[effect_name]], effect_name)
+      raw_points[[effect_name]] <- unscale_var(raw_points[[effect_name]], effect_name)
+
+      # Force wider ribbon bands
+      marginal_df <- marginal_df %>%
+        mutate(
+          ci_width = upper__ - lower__,
+          center = estimate__,
+          lower__ = center - (ci_width * 5 / 2),
+          upper__ = center + (ci_width * 5 / 2)
+        )
+      
+      # Plot
+      p <- ggplot() +
+        geom_point(data = raw_points, aes_string(x = effect_name, y = resp),
+                   alpha = 0.25, size = 1.3, color = point_col) +
+        geom_ribbon(data = marginal_df, aes_string(x = effect_name, ymin = "lower__", ymax = "upper__"),
+                    fill = ribbon_col, alpha = 0.5) +
+        geom_line(data = marginal_df, aes_string(x = effect_name, y = "estimate__"),
+                  color = line_col, size = 1.2) +
+        geom_hline(yintercept = 0, linetype = "dashed", color = "gray60", size = 0.5) +
+        geom_rug(data = raw_points, aes_string(x = effect_name),
+                 sides = "b", alpha = 0.2, length = unit(0.03, "npc")) +
+        scale_y_continuous(expand = expansion(mult = c(0.05, 0.05))) +  # buffer
+        labs(
+          x = axis_labels[[effect_name]],
+          y = y_labels[[resp]]
+        ) +
+        theme_classic(base_size = 16) +
+        theme(
+          axis.title.x = element_text(size = 16),
+          axis.title.y = ggtext::element_markdown(size = 16),
+          axis.text = element_text(size = 14),
+          legend.position = "none"
+        )
+
+      ggsave(
+        filename = file.path(resp_output_dir, paste0("marginal_effect_", effect_name, "_", resp, "_PUBLISH.png")),
+        plot = p, width = 8, height = 6, dpi = 600
+      )
+
+      all_plots[[resp]][[effect_name]] <- p
+    }
+
+    # Composite plots
+    composite_dir <- file.path(base_output_dir, model_name, "composites")
+    dir.create(composite_dir, recursive = TRUE, showWarnings = FALSE)
+
+    composite <- wrap_plots(all_plots[[resp]], ncol = 3)
+    ggsave(
+      filename = file.path(composite_dir, paste0("composite_effects_", resp, ".png")),
+      plot = composite,
+      width = 18, height = 6, dpi = 600
+    )
+  }
+  # ========================
+  # Full stacked composite for all responses (per model type)
+  # ========================
+  stacked_composite_dir <- file.path(base_output_dir, model_name, "composites")
+  dir.create(stacked_composite_dir, showWarnings = FALSE)
+  
+  stacked_composite <- wrap_plots(
+    lapply(all_plots, function(p_list) wrap_plots(p_list, ncol = 3)),
+    ncol = 1
+  )
+  
+  ggsave(
+    filename = file.path(stacked_composite_dir, paste0("composite_all_responses_", model_name, ".png")),
+    plot = stacked_composite,
+    width = 18, height = 5 * length(all_plots), dpi = 600
+  )
+  # ========================
+  # Composite plots excluding Overlap
+  # ========================
+  composite_dir_no_overlap <- file.path(base_output_dir, model_name, "composites_no_overlap")
+  dir.create(composite_dir_no_overlap, recursive = TRUE, showWarnings = FALSE)
+  
+  # Exclude Overlap for each response
+  all_plots_no_overlap <- lapply(all_plots, function(plot_list) {
+    plot_list[names(plot_list) != "Overlap"]
+  })
+  
+    # Save individual response composite plots (excluding Overlap)
+    for (resp in names(all_plots_no_overlap)) {
+      composite_no_overlap <- wrap_plots(all_plots_no_overlap[[resp]], ncol = 2)  # ncol = 2 since only 2 left
+      ggsave(
+        filename = file.path(composite_dir_no_overlap, paste0("composite_effects_no_overlap_", resp, ".png")),
+        plot = composite_no_overlap,
+        width = 12, height = 6, dpi = 600
+      )
+    }
+    
+  # Custom stacked composite (excluding Overlap)
+  responses_stack_both <- c(
+    "Centroid_Distance",
+    "Dispersion_Pocillopora",
+    "Dispersion_NonPocillopora"
+  )
+  
+  responses_only_nfft <- c(
+    "KDE_Overlap",
+    "Bhattacharyya_Coefficient"
+  )
+  
+  # Prepare list of vertically stacked plots for main responses
+  stacked_main <- lapply(responses_stack_both, function(resp) {
+    wrap_plots(all_plots_no_overlap[[resp]], ncol = 2)  # FS + NFFT side by side
+  })
+  
+  # Get only the NFFT plots for bottom row
+  nfft_only_row <- lapply(responses_only_nfft, function(resp) {
+    all_plots_no_overlap[[resp]][["NFFT"]]
+  })
+  
+  # Combine all in one vertical layout
+  stacked_composite_custom <- wrap_plots(
+    c(stacked_main, list(wrap_plots(nfft_only_row, ncol = 2))),
+    ncol = 1
+  )
+  
+  ggsave(
+    filename = file.path(composite_dir_no_overlap, paste0("composite_all_responses_no_overlap_", model_name, "_custom.png")),
+    plot = stacked_composite_custom,
+    width = 16,  # 2 plots * 8 units each
+    height = 24, # 4 rows * 6 units each
+    dpi = 600
+  )
+}
+
+cat("\n--- All models and plots saved successfully! ---\n")
+```
+
+## Model comparison
+
+```{r}
+# Model comparison
+comparison_dir <- file.path(base_output_dir, "comparisons")
+dir.create(comparison_dir, showWarnings = FALSE)
+
+for (resp in names(model_comparisons)) {
+  cat("\nModel comparison for:", resp, "\n")
+
+  loo_add <- model_comparisons[[resp]]$additive
+  loo_int <- model_comparisons[[resp]]$interaction
+
+  comp <- loo_compare(loo_add, loo_int)
+
+  # Print in console
+  print(comp)
+
+  # Save table
+  comp_df <- as.data.frame(comp)
+  comp_df$model <- rownames(comp_df)
+  write.csv(comp_df, file.path(comparison_dir, paste0("loo_compare_", resp, ".csv")), row.names = FALSE)
+
+  # Optional: Save weights for model selection
+  weights <- loo_model_weights(list(additive = loo_add, interaction = loo_int), method = "stacking")
+  write.csv(data.frame(model = names(weights), weight = weights),
+            file = file.path(comparison_dir, paste0("model_weights_", resp, ".csv")), row.names = FALSE)
+}
+```

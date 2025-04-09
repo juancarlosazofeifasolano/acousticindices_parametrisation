@@ -1,0 +1,261 @@
+---
+title: "fft_sensitivity_nmds"
+format: html
+editor: visual
+---
+
+# Ordination Analyses and Multivariate descriptors Using Acoustic Data: A Case Study on Coral Reef Soundscapes
+
+## Load required libraries
+
+```{r}
+required_packages <- c(
+  "dplyr", "tidyr", "ggplot2", "cluster", "factoextra", "vegan",
+  "readr", "stringr", "purrr", "MASS", "ks", "raster"
+)
+
+# Install any missing packages
+installed <- rownames(installed.packages())
+missing_packages <- setdiff(required_packages, installed)
+
+if (length(missing_packages) > 0) {
+  cat("Installing missing packages:\n")
+  print(missing_packages)
+  install.packages(missing_packages)
+}
+
+# Load all required packages
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(cluster)
+library(factoextra)
+library(vegan)
+library(readr)
+library(stringr)
+library(purrr)
+library(MASS)
+library(ks)
+library(raster)
+```
+
+## Set directories
+
+```{r}
+# Set up relative paths from the current script location
+# Get path to current script, fallback to working directory if run from Quarto or terminal
+if (requireNamespace("rstudioapi", quietly = TRUE) &&
+    rstudioapi::isAvailable() &&
+    !is.null(rstudioapi::getSourceEditorContext()$path)) {
+  script_path <- dirname(rstudioapi::getSourceEditorContext()$path)
+} else {
+  script_path <- getwd()  # fallback when knitting or running outside RStudio
+}
+project_root <- normalizePath(file.path(script_path, "..", ".."))
+
+# Define paths for input data and output results
+data_dir <- file.path(project_root, "outcome_acousticindices", "underwater", "acousticindices_underwater.csv")
+base_output_dir <- file.path(project_root, "outcome_multivariate", "underwater")
+
+# Create output directory if it doesn't exist
+if (!dir.exists(base_output_dir)) dir.create(base_output_dir, recursive = TRUE)
+
+# Check for data file existence
+if (!file.exists(data_dir)) stop("Data file does not exist: ", data_dir)
+```
+
+## Load data
+
+```{r}
+data_orig <- read_csv(data_dir) %>%
+  mutate(
+    Date = as.Date(Date, format = "%m/%d/%Y"),
+    DateTime = as.POSIXct(paste(Date, Time), format = "%Y-%m-%d %H:%M:%S"),
+    Hour = as.numeric(format(DateTime, "%H")),
+    Night_ID = ifelse(Hour < 12, Date - 1, Date),
+    File = as.factor(File),
+    Habitat = as.factor(Habitat),  
+    Period = as.factor(Period),
+    NFFT = as.numeric(NFFT),
+    Overlap = as.numeric(Overlap),
+    FS = as.numeric(FS)
+  ) %>%
+  filter(Period == "Night") %>%
+  dplyr::select(-Hour)
+
+data_orig$Habitat <- relevel(data_orig$Habitat, ref = "Pocillopora")
+```
+
+## Define iteration parameters
+
+```{r}
+sampling_rates <- c(48000, 44100, 32000, 24000, 22050, 16000)
+NFFT_range <- c(128, 256, 512, 1024, 2048, 4096, 8192, 16384)
+overlap_range <- seq(0.5, 0.9, by = 0.05)
+```
+
+## Define response variables
+
+```{r}
+acoustic_indices <- c("H", "ACI", "AEI", "ADI", "NDSI")
+```
+
+## Compute nMDS and multvariate descriptors
+
+```{r}
+# Get unique nights
+unique_nights <- sort(unique(data_orig$Night_ID))
+
+# Prepare list for all results
+results_list <- list()
+iteration_count <- 0
+total_iterations <- length(sampling_rates) * length(NFFT_range) * length(overlap_range) * length(unique_nights)
+
+# Begin loop
+for (night in unique_nights) {
+  for (fs_val in sampling_rates) {
+    for (nfft_val in NFFT_range) {
+      for (overlap_val in overlap_range) {
+        
+        # Track progress
+        iteration_count <- iteration_count + 1
+        cat(sprintf("Iteration %d of %d — Night: %s\n", iteration_count, total_iterations, night))
+        
+        # Filter current data
+        current_data <- data_orig %>%
+          filter(FS == fs_val, NFFT == nfft_val, Overlap == overlap_val, Night_ID == night)
+
+        # Skip if not enough data or only one habitat
+        if (nrow(current_data) < 2 || length(unique(current_data$Habitat)) < 2) next
+
+        # Scale acoustic indices
+        current_acoustic_scaled <- as.data.frame(scale(current_data[, acoustic_indices]))
+
+        # Compute Manhattan distance
+        dist_manhattan <- dist(current_acoustic_scaled, method = "manhattan")
+        
+        # Run NMDS
+        set.seed(42)
+        nmds_result <- metaMDS(dist_manhattan, k = 2, trymax = 2)
+
+        # Extract NMDS coordinates and habitat info
+        nmds_data <- as.data.frame(nmds_result$points)
+        colnames(nmds_data) <- c("NMDS1", "NMDS2")
+        nmds_data$Habitat <- factor(current_data$Habitat, levels = c("Pocillopora", "Non-Pocillopora"))
+
+        # Compute centroids
+        centroids <- nmds_data %>%
+          group_by(Habitat) %>%
+          summarise(NMDS1_mean = mean(NMDS1), NMDS2_mean = mean(NMDS2), .groups = "drop")
+        if (nrow(centroids) < 2) {
+          cat("   Skipping — only one habitat present\n")
+          next
+        }
+
+        centroid_distance <- as.numeric(dist(centroids[, 2:3], method = "euclidean")[1])
+        
+        # Subset NMDS coordinates by habitat
+        pocillopora_points <- subset(nmds_data, Habitat == "Pocillopora")
+        non_pocillopora_points <- subset(nmds_data, Habitat == "Non-Pocillopora")
+        
+        # Helper function: safe_sd returns NA if n < 2 or all NA
+        safe_sd <- function(x) {
+          if (length(x) < 2 || all(is.na(x))) return(NA)
+          sd(x)
+        }
+        
+        # Skip iteration if sample size too small or variance is missing/zero
+        if (nrow(pocillopora_points) < 2 || nrow(non_pocillopora_points) < 2 ||
+            is.na(safe_sd(pocillopora_points$NMDS1)) || is.na(safe_sd(pocillopora_points$NMDS2)) ||
+            is.na(safe_sd(non_pocillopora_points$NMDS1)) || is.na(safe_sd(non_pocillopora_points$NMDS2)) ||
+            safe_sd(pocillopora_points$NMDS1) == 0 || safe_sd(pocillopora_points$NMDS2) == 0 ||
+            safe_sd(non_pocillopora_points$NMDS1) == 0 || safe_sd(non_pocillopora_points$NMDS2) == 0) {
+          cat("   Skipping — insufficient variation or sample size for KDE\n")
+          next
+        }
+        
+        # Safe to compute KDE now
+        kde_pocillopora <- with(pocillopora_points, kde2d(NMDS1, NMDS2, n = 100))
+        kde_non_pocillopora <- with(non_pocillopora_points, kde2d(NMDS1, NMDS2, n = 100))
+        
+        kde_pocillopora_z <- kde_pocillopora$z / sum(kde_pocillopora$z)
+        kde_non_pocillopora_z <- kde_non_pocillopora$z / sum(kde_non_pocillopora$z)
+        
+        bhatta_coeff <- sum(sqrt(kde_pocillopora_z * kde_non_pocillopora_z), na.rm = TRUE)
+        
+        # 95% KDE contour overlap
+        threshold_95 <- function(z) quantile(z, probs = 0.95)
+        pocillopora_thresh <- threshold_95(as.vector(kde_pocillopora_z))
+        non_pocillopora_thresh <- threshold_95(as.vector(kde_non_pocillopora_z))
+        
+        pocillopora_95_mask <- kde_pocillopora_z >= pocillopora_thresh
+        non_pocillopora_95_mask <- kde_non_pocillopora_z >= non_pocillopora_thresh
+        
+        kde_95_overlap <- sum(pocillopora_95_mask & non_pocillopora_95_mask) / sum(pocillopora_95_mask | non_pocillopora_95_mask)
+        
+        # Multivariate dispersion
+        beta_dispersion <- betadisper(dist_manhattan, current_data$Habitat)
+        dispersion_results <- data.frame(
+          Habitat = levels(current_data$Habitat),
+          Dispersion = tapply(beta_dispersion$distances, current_data$Habitat, mean)
+        )
+        if (nrow(dispersion_results) < 2) next
+
+        habitat1_disp <- dispersion_results$Dispersion[1]
+        habitat2_disp <- dispersion_results$Dispersion[2]
+        
+        # NMDS plot
+        habitat_colors <- c("Pocillopora" = "#C1440E", "Non-Pocillopora" = "#0072B2")
+
+        nmds_plot <- ggplot(nmds_data, aes(x = NMDS1, y = NMDS2, color = Habitat)) +
+          geom_point(alpha = 0.5, size = 3) +
+          geom_point(data = centroids, aes(x = NMDS1_mean, y = NMDS2_mean), 
+                     color = "black", size = 6, shape = 8) +
+          scale_color_manual(values = habitat_colors) +
+          labs(title = paste("NMDS (Manhattan): FS =", fs_val, 
+                             "NFFT =", nfft_val, 
+                             "Overlap =", overlap_val,
+                             "Night =", night),
+               x = "NMDS1", y = "NMDS2") +
+          theme_minimal()
+
+        # Create subfolder for this night
+        night_folder <- file.path(base_output_dir, paste0("Night_", night))
+        dir.create(night_folder, recursive = TRUE, showWarnings = FALSE)
+
+        # Save plot
+        plot_filename <- sprintf("NMDS_FS_%d_NFFT_%d_Overlap_%.2f.png", fs_val, nfft_val, overlap_val)
+        ggsave(filename = file.path(night_folder, plot_filename),
+               plot = nmds_plot, width = 8, height = 6, dpi = 300)
+
+        # Save results
+        res_row <- data.frame(
+          Night_ID = night,
+          FS = fs_val,
+          Overlap = overlap_val,
+          NFFT = nfft_val,
+          Centroid_Distance = centroid_distance,
+          Habitat1_Dispersion = habitat1_disp,
+          Habitat2_Dispersion = habitat2_disp,
+          KDE_Overlap = kde_95_overlap,
+          Bhattacharyya_Coefficient = bhatta_coeff
+        )
+        
+        results_list[[length(results_list) + 1]] <- res_row
+      }
+    }
+  }
+}
+
+# Combine & save results
+if (length(results_list) > 0) {
+  final_results <- do.call(rbind, results_list)
+  output_csv <- file.path(base_output_dir, "nmds_metrics_by_night.csv")
+  write.csv(final_results, output_csv, row.names = FALSE)
+  cat("✅ Results saved to:", output_csv, "\n")
+} else {
+  cat("⚠️ No valid results to save — all iterations may have been skipped due to data filtering.\n")
+}
+```
