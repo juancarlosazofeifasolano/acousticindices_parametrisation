@@ -81,7 +81,7 @@ Explore the parametrisation effects on the nMDS results online:
 
 🌊 *Underwater NMDS Dashboard*  
 
-👉 [https://juancarlosazofeifasolano.shinyapps.io/nmds_dashboard_terrestrial/]
+👉 [https://juancarlosazofeifasolano.shinyapps.io/nmds_dashboard_underwater/]
 
 ---
 
